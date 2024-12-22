@@ -1,0 +1,82 @@
+open_ai_key = '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'
+
+import openai
+import json
+
+# Load your OpenAI API key
+openai.api_key = open_ai_key
+
+
+class Starting_Conditions():
+    goods: str
+    desires:list[int]
+
+def load_json(file_path):
+    """Loads a JSON file."""
+    with open(file_path, 'r') as file:
+        return json.load(file)
+
+def save_json(data, file_path):
+    """Saves data to a JSON file."""
+    with open(file_path, 'w') as file:
+        json.dump(data, file, indent=4)
+
+def ask_chatgpt(prompt):
+    """Sends a prompt to ChatGPT and gets the response."""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            response_format = Starting_Conditions,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+# Example Function to Interpret JSON
+def interpret_json(json_data):
+    """Processes the JSON data using ChatGPT."""
+    prompt = (
+        "You are provided with the following JSON data:\n" +
+        json.dumps(json_data, indent=4) +
+        "\nPlease summarize the data and suggest any improvements or actions based on it."
+    )
+    return ask_chatgpt(prompt)
+
+# Example Function to Modify JSON
+def modify_json(json_data):
+    """Modifies the JSON data using ChatGPT."""
+    prompt = (
+        "You are provided with the following JSON data:\n" +
+        json.dumps(json_data, indent=4) +
+        "\nPlease modify the data to include a new key 'status' with the value 'processed'."
+    )
+    response = ask_chatgpt(prompt)
+    try:
+        modified_data = json.loads(response)
+        return modified_data
+    except json.JSONDecodeError:
+        print("Failed to decode JSON from ChatGPT response.")
+        return None
+
+# Main Execution
+if __name__ == "__main__":
+    # Load the JSON file
+    file_path = "example.json"
+    json_data = load_json(file_path)
+
+    # Interpret JSON data
+    print("Interpreting JSON data...")
+    interpretation = interpret_json(json_data)
+    print("Interpretation:\n", interpretation)
+
+    # Modify JSON data
+    print("Modifying JSON data...")
+    modified_data = modify_json(json_data)
+
+    if modified_data:
+        save_json(modified_data, "modified_" + file_path)
+        print("Modified JSON saved successfully.")
+    else:
+        print("Failed to modify JSON.")
