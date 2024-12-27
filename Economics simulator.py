@@ -2,16 +2,65 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+class Skill:
+    def __init__(self, name, level=0, experience=0):
+        self.name = name
+        self.level = level
+        self.experience = experience
+        self.next_level_exp = 100  # Base experience needed for next level
+
+    def gain_experience(self, amount):
+        self.experience += amount
+        while self.experience >= self.next_level_exp:
+            self.level_up()
+
+    def level_up(self):
+        self.level += 1
+        self.experience -= self.next_level_exp
+        self.next_level_exp = int(self.next_level_exp * 1.5)  # Increase exp needed for next level
+
+class Machine:
+    def __init__(self, name, position, skill_boost, resource_consumption):
+        self.name = name
+        self.position = np.array(position)
+        self.skill_boost = skill_boost  # Dictionary of skills and their boost amounts
+        self.resource_consumption = resource_consumption  # Dictionary of resources needed per use
+        self.owner = None
+        self.in_use = False
+        self.maintenance_cost = sum(resource_consumption.values()) * 2  # Base maintenance cost
+
+    def can_operate(self, agent):
+        """Check if agent has enough resources to operate the machine"""
+        return all(agent.inventory.get(resource, 0) >= amount 
+                  for resource, amount in self.resource_consumption.items())
+
+    def consume_resources(self, agent):
+        """Consume resources needed for operation"""
+        for resource, amount in self.resource_consumption.items():
+            agent.inventory[resource] = agent.inventory.get(resource, 0) - amount
+
+class Job:
+    def __init__(self, name, position, reward, required_skills, training_job=False):
+        self.name = name
+        self.position = np.array(position)
+        self.reward = reward  # Can be positive (paying job) or negative (training)
+        self.required_skills = required_skills  # Dictionary of skill names and minimum levels
+        self.training_job = training_job  # Whether this is a training job
+        self.experience_reward = {skill: 20 for skill in required_skills}  # Base experience gain
+        self.completion_time = 5  # Base time to complete job
+        self.machine_compatible = True  # Whether machines can help with this job
+
 
 class DynamicAI:
     def __init__(self, market):
         self.market = market
         self.goods_list = ['good1', 'good2', 'good3']
         self.trading_radius = 15  # Agents can trade within 15 units of distance
-
+        
     def run_market_cycle(self):
         # Agents update their internal demand
-        self.update_internal_demand()
+        for agent in self.market.agents:
+            agent.update_internal_demand(self.goods_list)
         # Agents attempt to trade with nearby agents
         self.execute_trades()
 
@@ -21,12 +70,12 @@ class DynamicAI:
 
         # Calculate internal demand for each agent
         for agent in self.market.agents:
+            agent.update_internal_demand(self.goods_list)
             agent.desired_inventory = {}
             agent.internal_demand = {}
             for good in self.goods_list:
                 agent.desired_inventory[good] = agent.values_1.get(good, 0) * scaling_factor
                 agent.internal_demand[good] = agent.desired_inventory[good] - agent.inventory.get(good, 0)
-
 
     def execute_trades(self):
         # Buyers initiate the trading process
@@ -102,25 +151,81 @@ class DynamicAI:
                         # No potential sellers
                         continue
 
-
-
+    def execute_trade(self, buyer, seller, good, price):
+        # Determine the maximum quantity buyer can afford at this price
+        if price == 0:
+            return  # Prevent division by zero
+        max_affordable_quantity = buyer.wealth // price
+        # Determine the quantity to trade
+        quantity = min(
+            buyer.internal_demand[good],
+            seller.inventory[good],
+            max_affordable_quantity
+        )
+        quantity = int(quantity)
+        if quantity >= 1:
+            total_price = price * quantity
+            # Execute trade
+            buyer.spend(total_price)
+            seller.earn(total_price)
+            seller.inventory[good] -= quantity
+            buyer.inventory[good] = buyer.inventory.get(good, 0) + quantity
+            # Update internal demand
+            seller.internal_demand[good] += quantity  # Seller's demand decreases
+            buyer.internal_demand[good] -= quantity
+            # Print transaction details
+            print(f"\nTransaction executed between {seller.name} and {buyer.name}:")
+            print(f"{seller.name} sold {quantity} units of {good} to {buyer.name} at {price:.2f} per unit.")
+            print("Current Market State:")
+            print(self.market)
 
 class Good:
     def __init__(self, name, position):
         self.name = name
         self.position = np.array(position)
 
+class Task:
+    def __init__(self, name, position, reward, min_ability):
+        self.name = name
+        self.position = np.array(position)
+        self.reward = reward
+        self.min_ability = min_ability
+
 class EconomicAgent:
-    def __init__(self, name, initial_wealth, position, values_1):
+    def __init__(self, name, initial_wealth, position, values_1, luxury_pref=0.2):
+        # Basic agent properties
         self.name = name
         self.wealth = initial_wealth
         self.position = np.array(position)
+        self.values_1 = values_1
+        self.luxury_pref = luxury_pref
+        
+        # Initialize inventory and demands
         self.inventory = {'good1': 0, 'good2': 0, 'good3': 0}
-        self.values_1 = values_1  # values_1 for goods as a dictionary
-        self.target = None  # Current target for movement or acquisition
-        self.collecting = False  # Indicates if the agent is collecting a good
-        self.collecting_steps = 0  # Counter for collection steps
+        self.desired_inventory = {good: 0 for good in ['good1', 'good2', 'good3']}
+        self.internal_demand = {good: 0 for good in ['good1', 'good2', 'good3']}
+        
+        # Movement and collection properties
+        self.target = None
+        self.collecting = False
+        self.collecting_steps = 0
+        
+        # Initialize skills
+        self.skills = {
+            'manufacturing': Skill('manufacturing'),
+            'technology': Skill('technology'),
+            'research': Skill('research'),
+            'maintenance': Skill('maintenance'),
+            'operations': Skill('operations')
+        }
+        
+        # Job and machine properties
+        self.machines = []  # Machines owned by this agent
+        self.current_job = None
+        self.job_progress = 0
+        self.experience_multiplier = 1.0
 
+    
     def earn(self, amount):
         self.wealth += amount
 
@@ -128,6 +233,18 @@ class EconomicAgent:
         if amount > self.wealth:
             amount = self.wealth
         self.wealth -= amount
+
+    def update_internal_demand(self, goods_list, good_types, scaling_factor=10):
+            for good in goods_list:
+                # Adjust desired inventory based on the type of good
+                priority = scaling_factor * (1 + self.luxury_pref if good_types[good] == 'luxury' else 1)
+                self.desired_inventory[good] = self.values_1.get(good, 0) * priority
+                self.internal_demand[good] = self.desired_inventory[good] - self.inventory.get(good, 0)
+
+    def perceived_value(self, good, leader_price):
+        # Agents perceive the leader's price with some variation
+        perception_error = random.uniform(-0.1, 0.1)  # +/- 10% error in perception
+        return leader_price * (1 + perception_error)
 
     def pick_up_good(self, good, quantity=1):
         self.inventory[good] += quantity
@@ -146,15 +263,30 @@ class EconomicAgent:
             self.position[0] += direction_x * 0.1  # Move a fraction towards the target
             self.position[1] += direction_y * 0.1
 
-    def choose_target(self, agents, goods):
+    def choose_target(self, agents, goods, tasks):
         goods_targets = [(g.position, g.name) for g in goods]
         agent_targets = [(a.position, 'agent') for a in agents if a != self and any(a.inventory.values())]
+        task_targets = [(t.position, t.name) for t in tasks if self.abilities.get(t.name, 0) >= t.min_ability]
+
+        # Determine if agent should prioritize tasks due to low wealth
+        if self.wealth < 20 or any(self.internal_demand.get(good, 0) > 0 and self.wealth < self.values_1.get(good, 0) for good in self.internal_demand):
+            if task_targets:
+                self.target = min(task_targets, key=lambda t: np.linalg.norm(t[0] - self.position))
+                return
 
         if goods_targets:
-            # Prefer goods over agents
+            # Prefer goods over agents and tasks
             self.target = min(goods_targets, key=lambda t: np.linalg.norm(t[0] - self.position))
+        elif task_targets:
+            self.target = min(task_targets, key=lambda t: np.linalg.norm(t[0] - self.position))
         elif agent_targets:
             self.target = min(agent_targets, key=lambda t: np.linalg.norm(t[0] - self.position))
+
+    def perform_task(self, tasks):
+        for task in tasks:
+            if np.array_equal(self.position, task.position) and self.abilities.get(task.name, 0) >= task.min_ability:
+                self.earn(task.reward)
+                print(f"{self.name} performed {task.name} and earned {task.reward} wealth.")
 
     def buy_price(self, goods):
         buy_price = self.values_1[goods]
@@ -172,6 +304,75 @@ class EconomicAgent:
                 if distance <= radius:
                     nearby_agents.append(agent)
         return nearby_agents
+    def can_perform_job(self, job):
+        """Check if agent meets skill requirements for a job"""
+        return all(self.skills[skill].level >= level 
+                  for skill, level in job.required_skills.items())
+
+    def perform_job(self, job):
+        """Attempt to perform a job with potential machine assistance"""
+        if not self.can_perform_job(job):
+            return False
+
+        # Calculate effective skill level including machine boosts
+        effective_skills = self.calculate_effective_skills()
+        completion_speed = 1.0
+
+        # Check for available machines that can help
+        usable_machines = [m for m in self.machines 
+                          if not m.in_use and m.can_operate(self)]
+        
+        # Use machines if available and beneficial
+        for machine in usable_machines:
+            if job.machine_compatible:
+                if machine.can_operate(self):
+                    machine.in_use = True
+                    machine.consume_resources(self)
+                    completion_speed += 0.5
+                    self.experience_multiplier += 0.2
+
+        # Progress the job
+        self.job_progress += completion_speed
+        if self.job_progress >= job.completion_time:
+            # Complete the job
+            if job.reward > 0:  # Paying job
+                self.earn(job.reward)
+            else:  # Training job
+                self.spend(abs(job.reward))
+
+            # Grant experience
+            for skill, exp in job.experience_reward.items():
+                if skill in self.skills:
+                    self.skills[skill].gain_experience(
+                        exp * self.experience_multiplier
+                    )
+
+            # Reset job progress and machine use
+            self.job_progress = 0
+            for machine in self.machines:
+                machine.in_use = False
+            
+            return True
+
+        return False
+
+    def calculate_effective_skills(self):
+        """Calculate total skill levels including machine boosts"""
+        effective_skills = {name: skill.level 
+                          for name, skill in self.skills.items()}
+        
+        for machine in self.machines:
+            if not machine.in_use:
+                for skill, boost in machine.skill_boost.items():
+                    if skill in effective_skills:
+                        effective_skills[skill] += boost
+        
+        return effective_skills
+
+    def maintain_machines(self):
+        """Pay maintenance costs for owned machines"""
+        total_maintenance = sum(m.maintenance_cost for m in self.machines)
+        self.spend(total_maintenance)
 
     def __str__(self):
         return f"{self.name} has wealth: {self.wealth:.2f}, inventory: {self.inventory}, at position {self.position}"
@@ -180,6 +381,7 @@ class Market:
     def __init__(self):
         self.agents = []
         self.goods = []
+        self.tasks = []
 
     def add_agent(self, agent):
         self.agents.append(agent)
@@ -187,14 +389,61 @@ class Market:
     def add_good(self, good):
         self.goods.append(good)
 
+    def add_task(self, task):
+        self.tasks.append(task)
+
     def __str__(self):
         return "\n".join(str(agent) for agent in self.agents)
 
 class Economy:
     def __init__(self):
         self.market = Market()
+        self.good_types = {
+            'good1': 'necessary',
+            'good2': 'necessary',
+            'good3': 'luxury'
+        }
+        self.jobs = []
+        self.machines = []
+        self.training_jobs = []
         print("Market Open")
         self.ai = DynamicAI(self.market)
+        
+    def add_machine(self, machine):
+            self.machines.append(machine)
+            
+    def simulate(self, steps):
+        for _ in range(steps):
+            self.move_agents()
+            self.acquire_goods()
+            self.process_jobs()
+            self.maintain_machines()
+            self.ai.run_market_cycle()
+            
+    def process_jobs(self):
+        for agent in self.market.agents:
+            if agent.current_job:
+                job_completed = agent.perform_job(agent.current_job)
+                if job_completed:
+                    agent.current_job = None
+            else:
+                # Choose new job based on skills and wealth
+                available_jobs = self.jobs + self.training_jobs
+                suitable_jobs = [j for j in available_jobs 
+                               if agent.can_perform_job(j)]
+                
+                if suitable_jobs:
+                    if agent.wealth < 50:  # Low on money, prioritize paying jobs
+                        paying_jobs = [j for j in suitable_jobs 
+                                     if j.reward > 0]
+                        if paying_jobs:
+                            agent.current_job = random.choice(paying_jobs)
+                    else:  # Can afford training
+                        agent.current_job = random.choice(suitable_jobs)
+                        
+    def maintain_machines(self):
+        for agent in self.market.agents:
+            agent.maintain_machines()
 
     def add_agent(self, name, initial_wealth, position, values_1, initial_inventory=None):
         agent = EconomicAgent(name, initial_wealth, position, values_1)
@@ -202,20 +451,23 @@ class Economy:
             agent.inventory.update(initial_inventory)
         self.market.add_agent(agent)
 
-
-    def add_good(self, name, position):
+    def add_good(self, name, position, good_type):
         good = Good(name, position)
         self.market.add_good(good)
+        self.good_types[name] = good_type  # Assign type (luxury or necessary)
 
-    def simulate(self, steps):
-        for _ in range(steps):
-            self.move_agents()
-            self.acquire_goods()
-            self.ai.run_market_cycle()  # Now trading happens after acquiring goods
+    def add_task(self, name, position, reward, min_ability):
+        task = Task(name, position, reward, min_ability)
+        self.market.add_task(task)
 
+    def add_job(self, name, position, reward, required_skills, training_job=False):
+        job = Job(name, position, reward, required_skills,training_job)
+        self.jobs.append(job)
+
+    
     def move_agents(self):
         for agent in self.market.agents:
-            agent.choose_target(self.market.agents, self.market.goods)
+            agent.choose_target(self.market.agents, self.market.goods, self.jobs)
             if agent.target:
                 agent.move_towards(agent.target[0])
 
@@ -256,31 +508,72 @@ class Economy:
             ax.plot(x, y, 'rs', markersize=10)
             ax.text(x, y, f'{good.name}', size=10, zorder=1, color='r')
 
+        for task in self.market.tasks:
+            x, y = task.position
+            ax.plot(x, y, 'g^', markersize=10)
+            ax.text(x, y, f'{task.name}', size=10, zorder=1, color='g')
+
 def update(frame, economy, ax):
     economy.simulate(1)
     economy.plot_market(ax)
 
+
+
+
 if __name__ == "__main__":
     economy = Economy()
-    economy.add_agent("Alice", 100, (0, 0), {'good1': 10, 'good2': 5, 'good3': 1}, {'good1': 15,'good2': 10,'good3': 1})
-    economy.add_agent("Bob", 50, (5, 5), {'good1': 2, 'good2': 80, 'good3': 4}, {'good1': 5,'good2': 1,'good3': 7})
-    economy.add_agent("Charlie", 75, (-5, -5), {'good1': 6, 'good2': 3, 'good3': 7}, {'good1': 1,'good2': 5,'good3': 13})
 
+    # Add agents
+    economy.add_agent("Alice", 100, (0, 0), {'good1': 10, 'good2': 5, 'good3': 1})
+    economy.add_agent("Bob", 50, (5, 5), {'good1': 2, 'good2': 80, 'good3': 4})
+    economy.add_agent("Charlie", 75, (-5, -5), {'good1': 6, 'good2': 3, 'good3': 7})
+    print(economy)
     # Function to generate random positions within the environment
     def random_position():
         return (random.uniform(-8, 8), random.uniform(-8, 8))
 
-    # Add 5 units of good1
+     # Add goods with classifications
     for _ in range(5):
-        economy.add_good('good1', random_position())
-
-    # Add 7 units of good2
+        economy.add_good('good1', random_position(), 'necessary')
     for _ in range(7):
-        economy.add_good('good2', random_position())
-
-    # Add 10 units of good3
+        economy.add_good('good2', random_position(), 'necessary')
     for _ in range(10):
-        economy.add_good('good3', random_position())
+        economy.add_good('good3', random_position(), 'luxury')
+
+        
+    machine1 = Machine("AutoFabricator", (1, 1),
+                      skill_boost={'manufacturing': 2, 'technology': 1},
+                      resource_consumption={'good1': 2, 'good2': 1})
+    
+    machine2 = Machine("ResearchAI", (-1, -1),
+                      skill_boost={'research': 3, 'technology': 2},
+                      resource_consumption={'good2': 2, 'good3': 1})
+    
+    economy.add_machine(machine1)
+    economy.add_machine(machine2)
+    
+    # Add regular jobs
+    economy.add_job('factory_work', (2, 2),
+                   reward=20,
+                   required_skills={'manufacturing': 1, 'operations': 1})
+    
+    economy.add_job('research_project', (-2, -2),
+                   reward=35,
+                   required_skills={'research': 2, 'technology': 1})
+    
+    # Add training jobs (negative reward means payment required)
+    economy.add_job('manufacturing_training', (3, 3),
+                   reward=-10,
+                   required_skills={'manufacturing': 0},
+                   training_job=True)
+    
+    economy.add_job('tech_workshop', (-3, -3),
+                   reward=-15,
+                   required_skills={'technology': 0},
+                   training_job=True)
+ 
+
+
     print(economy.market)
 
     fig, ax = plt.subplots(figsize=(12, 8))  # Increased size of the subplot
